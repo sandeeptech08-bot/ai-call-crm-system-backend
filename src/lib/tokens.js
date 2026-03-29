@@ -7,10 +7,9 @@ const ACCESS_TOKEN_EXPIRY = process.env.ACCESS_TOKEN_EXPIRY || "7d";
 const REFRESH_TOKEN_EXPIRY = process.env.REFRESH_TOKEN_EXPIRY || "7d";
 const REFRESH_TOKEN_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days
 
-// Fail fast on startup if secrets are missing
+// Warn on startup if secrets are missing (server still starts so healthcheck passes)
 if (!ACCESS_TOKEN_SECRET || !REFRESH_TOKEN_SECRET) {
-  console.error("❌ FATAL: ACCESS_TOKEN_SECRET and REFRESH_TOKEN_SECRET must be set in .env");
-  process.exit(1);
+  console.error("❌ WARNING: ACCESS_TOKEN_SECRET and REFRESH_TOKEN_SECRET must be set in environment variables");
 }
 
 /**

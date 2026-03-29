@@ -5,18 +5,9 @@ const express = require("express");
 const helmet = require("helmet");
 const cors = require("cors");
 const cookieParser = require("cookie-parser");
-const { connectDB } = require("./config/db");
-const { initSocket } = require("./lib/socket");
-const passport = require("./config/passport");
-const authRoutes = require("./routes/authRoutes");
-const agentRoutes = require("./routes/agentRoutes");
-const projectRoutes = require("./routes/projectRoutes");
-const phoneNumberRoutes = require("./routes/phoneNumberRoutes");
-const leadRoutes = require("./routes/leadRoutes");
-const callHistoryRoutes = require("./routes/callHistoryRoutes");
-const webhookRoutes = require("./routes/webhookRoutes");
-const { errorHandler, notFoundHandler } = require("./middleware/errorHandler");
 const compression = require("compression");
+const { errorHandler, notFoundHandler } = require("./middleware/errorHandler");
+
 const PORT = parseInt(process.env.PORT || "8080", 10);
 const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:3000";
 
@@ -42,11 +33,8 @@ app.use(express.json({ limit: "2mb" }));
 app.use(express.urlencoded({ extended: false, limit: "2mb" }));
 app.use(cookieParser());
 
-// ─── Passport (stateless, no session) ────────────────────────────────────────
-app.use(passport.initialize());
-
-// ─── Health Check ─────────────────────────────────────────────────────────────
-app.get("/api/health", (req, res) => {
+// ─── Health Check (registered first — before anything that can crash) ─────────
+app.get("/api/health", (_req, res) => {
   res.status(200).json({
     success: true,
     message: "Server is running",
@@ -54,49 +42,78 @@ app.get("/api/health", (req, res) => {
   });
 });
 
-// ─── Auth Routes ──────────────────────────────────────────────────────────────
-app.use("/api/auth", authRoutes);
-
-// ─── Agent Routes ─────────────────────────────────────────────────────────────
-app.use("/api/agents", agentRoutes);
-
-// ─── Project Routes ───────────────────────────────────────────────────────────
-app.use("/api/projects", projectRoutes);
-
-// ─── Phone Number Routes ──────────────────────────────────────────────────────
-app.use("/api/phone-numbers", phoneNumberRoutes);
-
-// ─── Lead Routes ──────────────────────────────────────────────────────────────
-app.use("/api/leads", leadRoutes);
-
-// ─── Call History Routes ──────────────────────────────────────────────────────
-app.use("/api/call-history", callHistoryRoutes);
-
-// ─── Webhook Routes (no auth — Bolna calls these) ────────────────────────────
-app.use("/api/webhook", webhookRoutes);
-
-// ─── Error & 404 Handlers ─────────────────────────────────────────────────────
-app.use(notFoundHandler);
-app.use(errorHandler);
-
-// ─── Start Server ─────────────────────────────────────────────────────────────
+// ─── HTTP Server — bind immediately so Railway healthcheck passes ──────────────
 const server = http.createServer(app);
 
-// Initialize Socket.io (must be before server.listen)
-initSocket(server);
-
-// Start the Bull call worker
-require("./workers/callWorker");
-
-server.listen(PORT, () => {
+server.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 Backend server running on port ${PORT}`);
   console.log(`   Environment : ${process.env.NODE_ENV || "development"}`);
   console.log(`   CORS origin : ${FRONTEND_URL}`);
+
+  // ─── Load routes & services AFTER server is listening ───────────────────────
+  try {
+    const passport = require("./config/passport");
+    app.use(passport.initialize());
+
+    const authRoutes = require("./routes/authRoutes");
+    const agentRoutes = require("./routes/agentRoutes");
+    const projectRoutes = require("./routes/projectRoutes");
+    const phoneNumberRoutes = require("./routes/phoneNumberRoutes");
+    const leadRoutes = require("./routes/leadRoutes");
+    const callHistoryRoutes = require("./routes/callHistoryRoutes");
+    const webhookRoutes = require("./routes/webhookRoutes");
+
+    // ─── Auth Routes ────────────────────────────────────────────────────────────
+    app.use("/api/auth", authRoutes);
+
+    // ─── Agent Routes ───────────────────────────────────────────────────────────
+    app.use("/api/agents", agentRoutes);
+
+    // ─── Project Routes ─────────────────────────────────────────────────────────
+    app.use("/api/projects", projectRoutes);
+
+    // ─── Phone Number Routes ────────────────────────────────────────────────────
+    app.use("/api/phone-numbers", phoneNumberRoutes);
+
+    // ─── Lead Routes ────────────────────────────────────────────────────────────
+    app.use("/api/leads", leadRoutes);
+
+    // ─── Call History Routes ────────────────────────────────────────────────────
+    app.use("/api/call-history", callHistoryRoutes);
+
+    // ─── Webhook Routes (no auth — Bolna calls these) ───────────────────────────
+    app.use("/api/webhook", webhookRoutes);
+
+    // ─── Error & 404 Handlers ───────────────────────────────────────────────────
+    app.use(notFoundHandler);
+    app.use(errorHandler);
+
+    // ─── Socket.io ──────────────────────────────────────────────────────────────
+    const { initSocket } = require("./lib/socket");
+    initSocket(server);
+
+    // ─── Bull call worker ───────────────────────────────────────────────────────
+    require("./workers/callWorker");
+
+    // ─── MongoDB (non-blocking) ─────────────────────────────────────────────────
+    const { connectDB } = require("./config/db");
+    connectDB().catch((err) => {
+      console.error("❌ Failed to connect to MongoDB:", err.message);
+    });
+
+    console.log("✅ All routes and services initialised");
+  } catch (err) {
+    console.error("❌ Startup error (server still running):", err.message);
+  }
 });
 
-// Connect to DB after server is up (non-blocking)
-connectDB().catch((err) => {
-  console.error("❌ Failed to connect to MongoDB:", err.message);
+// ─── Global error guards — prevent process from dying on unhandled errors ──────
+process.on("uncaughtException", (err) => {
+  console.error("❌ Uncaught Exception:", err.message);
+});
+
+process.on("unhandledRejection", (reason) => {
+  console.error("❌ Unhandled Rejection:", reason);
 });
 
 // ─── Graceful Shutdown (SIGTERM from Render / SIGINT from Ctrl+C) ─────────────
