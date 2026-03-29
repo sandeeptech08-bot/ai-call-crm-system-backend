@@ -17,6 +17,26 @@ const { singleLeadCallQueue } = require("../lib/queue");
 const WINDOW_START_HOUR = 10; // 10:00 AM
 const WINDOW_END_HOUR   = 19; // 7:00 PM  (exclusive — calls placed before this)
 
+// ─── Timezone ─────────────────────────────────────────────────────────────────
+// All callback times from Bolna extracted_data are assumed to be in IST (UTC+5:30).
+// Railway/production servers run in UTC, so we must offset manually.
+const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000; // 5 hours 30 minutes in ms
+
+/**
+ * Convert a local IST wall-clock Date object to UTC Date.
+ * i.e. treat the Date as if it were IST and return the equivalent UTC Date.
+ */
+function istToUtc(d) {
+  return new Date(d.getTime() - IST_OFFSET_MS);
+}
+
+/**
+ * Convert a UTC Date to IST wall-clock time for window comparisons.
+ */
+function utcToIst(d) {
+  return new Date(d.getTime() + IST_OFFSET_MS);
+}
+
 // ─── Time parsing ─────────────────────────────────────────────────────────────
 
 /**
@@ -36,11 +56,8 @@ function parseCallbackTime(raw) {
   if (!raw) return null;
   const str = String(raw).trim();
 
-  // 1. Native JS parse (ISO, RFC 2822, "March 30 2026 2:00 PM", etc.)
-  const native = new Date(str);
-  if (!isNaN(native.getTime())) return native;
-
-  // 2. DD/MM/YYYY HH:mm or DD-MM-YYYY HH:mm (optional AM/PM)
+  // 1. DD/MM/YYYY HH:mm or DD-MM-YYYY HH:mm (optional AM/PM) — check FIRST
+  //    because these are always IST from Bolna extracted_data
   const m2 = str.match(
     /^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})\s+(\d{1,2}):(\d{2})\s*(AM|PM)?$/i
   );
@@ -51,18 +68,23 @@ function parseCallbackTime(raw) {
       if (meridiem.toUpperCase() === "PM" && hour !== 12) hour += 12;
       if (meridiem.toUpperCase() === "AM" && hour === 12) hour = 0;
     }
-    const d = new Date(
-      `${yyyy}-${mm.padStart(2, "0")}-${dd.padStart(2, "0")}T${String(hour).padStart(2, "0")}:${min}:00`
+    // Build as UTC (no timezone suffix) then treat as IST → convert to UTC
+    const localDate = new Date(
+      `${yyyy}-${mm.padStart(2, "0")}-${dd.padStart(2, "0")}T${String(hour).padStart(2, "0")}:${min}:00Z`
     );
-    if (!isNaN(d.getTime())) return d;
+    if (!isNaN(localDate.getTime())) return istToUtc(localDate);
   }
 
-  // 3. YYYY-MM-DD HH:mm (space instead of T)
+  // 2. YYYY-MM-DD HH:mm (space instead of T) — treat as IST
   const m3 = str.match(/^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})$/);
   if (m3) {
-    const d = new Date(`${m3[1]}-${m3[2]}-${m3[3]}T${m3[4]}:${m3[5]}:00`);
-    if (!isNaN(d.getTime())) return d;
+    const localDate = new Date(`${m3[1]}-${m3[2]}-${m3[3]}T${m3[4]}:${m3[5]}:00Z`);
+    if (!isNaN(localDate.getTime())) return istToUtc(localDate);
   }
+
+  // 3. ISO 8601 with explicit timezone — use as-is (already has tz info)
+  const native = new Date(str);
+  if (!isNaN(native.getTime())) return native;
 
   console.warn("[callbackScheduler] Could not parse callback time:", str);
   return null;
@@ -78,36 +100,41 @@ function parseCallbackTime(raw) {
  * @returns {Date} - Clamped, future date inside the allowed window
  */
 function clampToWindow(requestedDate) {
-  const base =
+  // Work in IST for window comparisons (window is 10AM-7PM IST)
+  const baseUtc =
     requestedDate instanceof Date && !isNaN(requestedDate)
       ? new Date(requestedDate)
-      : new Date(); // fallback: schedule ASAP
+      : new Date();
 
-  base.setSeconds(0, 0); // strip seconds/ms
+  // Convert to IST for hour comparison
+  let baseIst = utcToIst(baseUtc);
+  baseIst.setSeconds(0, 0);
 
-  const hour = base.getHours();
+  const hour = baseIst.getHours();
 
   if (hour < WINDOW_START_HOUR) {
-    // Too early → set to 10:00 AM same day
-    base.setHours(WINDOW_START_HOUR, 0, 0, 0);
+    // Too early in IST → set to 10:00 AM IST same day
+    baseIst.setHours(WINDOW_START_HOUR, 0, 0, 0);
   } else if (hour >= WINDOW_END_HOUR) {
-    // Too late → set to 10:00 AM next day
-    base.setDate(base.getDate() + 1);
-    base.setHours(WINDOW_START_HOUR, 0, 0, 0);
+    // Too late in IST → set to 10:00 AM IST next day
+    baseIst.setDate(baseIst.getDate() + 1);
+    baseIst.setHours(WINDOW_START_HOUR, 0, 0, 0);
   }
-  // else: already inside window — keep as-is
 
-  // If still in the past (e.g. raw date was yesterday), push to next 10 AM
+  // Convert back to UTC for Bull delay calculation
+  let base = istToUtc(baseIst);
+
+  // If still in the past, push to next 10 AM IST
   if (base.getTime() <= Date.now()) {
-    const now = new Date();
-    now.setSeconds(0, 0);
-    if (now.getHours() < WINDOW_START_HOUR) {
-      now.setHours(WINDOW_START_HOUR, 0, 0, 0);
+    const nowIst = utcToIst(new Date());
+    nowIst.setSeconds(0, 0);
+    if (nowIst.getHours() < WINDOW_START_HOUR) {
+      nowIst.setHours(WINDOW_START_HOUR, 0, 0, 0);
     } else {
-      now.setDate(now.getDate() + 1);
-      now.setHours(WINDOW_START_HOUR, 0, 0, 0);
+      nowIst.setDate(nowIst.getDate() + 1);
+      nowIst.setHours(WINDOW_START_HOUR, 0, 0, 0);
     }
-    return now;
+    return istToUtc(nowIst);
   }
 
   return base;
