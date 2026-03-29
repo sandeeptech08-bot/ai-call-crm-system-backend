@@ -1,0 +1,72 @@
+# render.yaml — Render infrastructure-as-code
+# Docs: https://render.com/docs/blueprint-spec
+#
+# HOW TO USE:
+#   1. Push this repo to GitHub.
+#   2. In Render Dashboard → New → Blueprint → connect repo → select this file.
+#   3. Render creates the Web Service + Key Value (Redis) automatically.
+#   4. Set all environment variables marked <REPLACE_ME> via the Render Dashboard
+#      (Settings → Environment) or use Render's secret groups.
+
+services:
+  - type: web
+    name: bolna-backend
+    runtime: node
+    region: oregon           # pick closest to your users
+    plan: free               # change to "starter" or higher for production
+    rootDir: .               # bolna-task-backend/ is the repo root for this service
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 8080
+      # ── MongoDB ──────────────────────────────────────────────────────────────
+      - key: MONGODB_URI
+        sync: false          # set manually in dashboard (never commit secrets)
+      # ── Redis (link to the Key Value instance below) ──────────────────────
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: bolna-redis
+          property: connectionString
+      # ── JWT ──────────────────────────────────────────────────────────────────
+      - key: JWT_ACCESS_SECRET
+        sync: false
+      - key: JWT_REFRESH_SECRET
+        sync: false
+      # ── CORS ─────────────────────────────────────────────────────────────────
+      - key: FRONTEND_URL
+        sync: false          # e.g. https://your-app.vercel.app
+      # ── Bolna ────────────────────────────────────────────────────────────────
+      - key: BOLNA_API_BASE
+        value: https://api.bolna.ai
+      # ── Google OAuth ─────────────────────────────────────────────────────────
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      # ── Nodemailer (Gmail) ────────────────────────────────────────────────────
+      - key: MAIL_HOST
+        value: smtp.gmail.com
+      - key: MAIL_PORT
+        value: 465
+      - key: MAIL_SECURE
+        value: true
+      - key: MAIL_USER
+        sync: false
+      - key: MAIL_PASS
+        sync: false
+      - key: MAIL_FROM
+        sync: false          # e.g. "Bolna AI <you@gmail.com>"
+      - key: MAIL_TO
+        sync: false
+
+  # ── Render Key Value (Redis-compatible) ──────────────────────────────────────
+  - type: redis
+    name: bolna-redis
+    region: oregon           # must match the web service region
+    plan: free               # free has no persistence; use "starter" for prod data
+    maxmemoryPolicy: noeviction   # important for Bull job queues
