@@ -79,10 +79,31 @@ async function getRecording(req, res, next) {
       return res.redirect(302, recordingUrl);
     }
 
-    // Twilio URLs require Basic Auth (Account SID + Auth Token) which we don't store.
-    // Return 404 so the frontend can gracefully show "Recording not available".
+    // ── Step 3: Twilio URLs — proxy with Basic Auth using stored credentials ──
     if (recordingUrl.includes("twilio.com") || recordingUrl.includes("api.twilio")) {
-      return res.status(404).json({ success: false, message: "Recording requires Twilio credentials not stored on this server" });
+      const twilioSid = process.env.TWILIO_ACCOUNT_SID;
+      const twilioToken = process.env.TWILIO_AUTH_TOKEN;
+
+      if (!twilioSid || !twilioToken) {
+        return res.status(404).json({ success: false, message: "Twilio credentials not configured on server" });
+      }
+
+      const basicAuth = Buffer.from(`${twilioSid}:${twilioToken}`).toString("base64");
+      const audioRes = await fetch(recordingUrl, {
+        headers: { Authorization: `Basic ${basicAuth}`, Accept: "audio/*,*/*" },
+      });
+
+      if (!audioRes.ok) {
+        return res.status(404).json({ success: false, message: "Could not fetch Twilio recording" });
+      }
+
+      const contentType = audioRes.headers.get("content-type") || "audio/mpeg";
+      const buffer = await audioRes.arrayBuffer();
+      res.setHeader("Content-Type", contentType);
+      res.setHeader("Content-Length", buffer.byteLength);
+      res.setHeader("Accept-Ranges", "bytes");
+      res.setHeader("Cache-Control", "private, max-age=3600");
+      return res.end(Buffer.from(buffer));
     }
 
     // For any other URL, attempt a direct stream.

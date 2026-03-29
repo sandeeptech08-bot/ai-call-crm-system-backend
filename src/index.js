@@ -13,6 +13,10 @@ const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:3000";
 
 const app = express();
 
+// ─── Trust Proxy (required for Railway / any reverse proxy) ───────────────────
+// Fixes express-rate-limit ERR_ERL_UNEXPECTED_X_FORWARDED_FOR
+app.set("trust proxy", 1);
+
 // ─── Security Middleware ───────────────────────────────────────────────────────
 app.use(helmet());
 

@@ -3,16 +3,13 @@
  * Must have 4 parameters to be recognized by Express as an error handler.
  */
 function errorHandler(err, req, res, next) { // eslint-disable-line no-unused-vars
-  console.error("❌ Unhandled error:", err.message);
+  console.error("❌ Unhandled error:", err.stack || err.message);
 
   const statusCode = res.statusCode !== 200 ? res.statusCode : 500;
 
   res.status(statusCode).json({
     success: false,
-    message:
-      process.env.NODE_ENV === "production"
-        ? "An internal server error occurred"
-        : err.message,
+    message: err.message || "An internal server error occurred",
   });
 }
 
